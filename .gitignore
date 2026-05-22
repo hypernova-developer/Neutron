@@ -1,0 +1,8 @@
+# Neutron Project - Git Ignore Pattern
+
+forever_history.log
+.vscode/
+.vs/
+.idea/
+Thumbs.db
+.DS_Store
