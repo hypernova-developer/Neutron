@@ -1,3 +1,4 @@
+/*
 #include <iostream>
 #include <string>
 #include <vector>
@@ -444,5 +445,240 @@ namespace neutron
 int main()
 {
     neutron::ExecuteCoreEngine();
+    return 0;
+}
+*/
+
+#include <iostream>
+#include <vector>
+#include <string>
+#include <thread>
+#include <mutex>
+#include <winsock2.h>
+#include <ws2tcpip.h>
+
+namespace neutron
+{
+    class NetworkEngine
+    {
+    private:
+        std::string m_nickname;
+        SOCKET m_connectionSocket;
+        bool m_isServerActive;
+        bool m_isHostMode;
+        std::mutex m_displayMutex;
+
+        void EraseAndOverwriteUserLine(const std::string& message)
+        {
+            HANDLE hConsole = GetStdHandle(STD_OUTPUT_HANDLE);
+            CONSOLE_SCREEN_BUFFER_INFO csbi;
+            GetConsoleScreenBufferInfo(hConsole, &csbi);
+            
+            csbi.dwCursorPosition.Y -= 1;
+            csbi.dwCursorPosition.X = 0;
+            SetConsoleCursorPosition(hConsole, csbi.dwCursorPosition);
+            
+            DWORD written;
+            FillConsoleOutputCharacterA(hConsole, ' ', csbi.dwSize.X, csbi.dwCursorPosition, &written);
+            
+            std::cout << m_nickname << " (You): " << message << "\n";
+        }
+
+        void PrintTunnelHeader()
+        {
+            std::cout << "[SYSTEM] End-to-End Tunnel Established!" << std::endl;
+            std::cout << "=============================================" << std::endl;
+        }
+
+        void PrintHelpMenu()
+        {
+            std::cout << "\n--- NEUTRON CORE COMMANDS ---" << std::endl;
+            std::cout << "/help  : Display available system commands." << std::endl;
+            std::cout << "/clear : Clear the console screen buffer." << std::endl;
+            std::cout << "/quit  : Terminate the secure session." << std::endl;
+            std::cout << "-----------------------------\n" << std::endl;
+        }
+
+    public:
+        NetworkEngine() : m_connectionSocket(INVALID_SOCKET), m_isServerActive(true), m_isHostMode(false)
+        {
+            WSADATA wsaData;
+            WSAStartup(MAKEWORD(2, 2), &wsaData);
+            std::cout << "[NEUTRON] Enter your Nickname: ";
+            std::getline(std::cin, m_nickname);
+            system("CLS");
+            SetConsoleTitleA("Neutron System Core 2026");
+            system("COLOR 0D");
+        }
+
+        ~NetworkEngine()
+        {
+            m_isServerActive = false;
+            if (m_connectionSocket != INVALID_SOCKET)
+            {
+                closesocket(m_connectionSocket);
+            }
+            WSACleanup();
+        }
+
+        void ExecuteServerMode()
+        {
+            m_isHostMode = true;
+            SOCKET listeningSocket = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+            sockaddr_in serverAddress = {};
+            serverAddress.sin_family = AF_INET;
+            serverAddress.sin_port = htons(8080);
+            serverAddress.sin_addr.s_addr = INADDR_ANY;
+
+            bind(listeningSocket, (sockaddr*)&serverAddress, sizeof(serverAddress));
+            listen(listeningSocket, 1);
+
+            while (true)
+            {
+                m_isServerActive = true;
+                std::cout << "[SYSTEM] Operational. Waiting for peer on port 8080..." << std::endl;
+                m_connectionSocket = accept(listeningSocket, NULL, NULL);
+
+                if (m_connectionSocket != INVALID_SOCKET)
+                {
+                    InitializeCommunication();
+                }
+                
+                closesocket(m_connectionSocket);
+                m_connectionSocket = INVALID_SOCKET;
+                
+                std::cout << "\n[SYSTEM] Re-initializing server loop..." << std::endl;
+                std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+            }
+            closesocket(listeningSocket);
+        }
+
+        void ExecuteClientMode(const std::string& targetIp)
+        {
+            m_isHostMode = false;
+            m_connectionSocket = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+            sockaddr_in remoteAddress = {};
+            remoteAddress.sin_family = AF_INET;
+            remoteAddress.sin_port = htons(8080);
+            inet_pton(AF_INET, targetIp.c_str(), &remoteAddress.sin_addr);
+
+            std::cout << "[SYSTEM] Attempting connection to " << targetIp << "..." << std::endl;
+            if (connect(m_connectionSocket, (sockaddr*)&remoteAddress, sizeof(remoteAddress)) == 0)
+            {
+                InitializeCommunication();
+            }
+            else
+            {
+                std::cout << "[ERROR] Connection establishment failed!" << std::endl;
+            }
+        }
+
+    private:
+        void InitializeCommunication()
+        {
+            system("CLS");
+            PrintTunnelHeader();
+
+            std::thread receiverThread(&NetworkEngine::IncomingTrafficHandler, this);
+            receiverThread.detach();
+
+            std::string userMessage;
+            while (m_isServerActive)
+            {
+                std::getline(std::cin, userMessage);
+                if (!m_isServerActive)
+                {
+                    break;
+                }
+                if (userMessage == "/quit")
+                {
+                    m_isServerActive = false;
+                    break;
+                }
+                if (userMessage == "/clear")
+                {
+                    std::lock_guard<std::mutex> lock(m_displayMutex);
+                    system("CLS");
+                    PrintTunnelHeader();
+                    continue;
+                }
+                if (userMessage == "/help")
+                {
+                    std::lock_guard<std::mutex> lock(m_displayMutex);
+                    PrintHelpMenu();
+                    continue;
+                }
+                if (!userMessage.empty())
+                {
+                    std::string payload = m_nickname + ": " + userMessage;
+                    send(m_connectionSocket, payload.c_str(), static_cast<int>(payload.length()), 0);
+                    
+                    std::lock_guard<std::mutex> lock(m_displayMutex);
+                    EraseAndOverwriteUserLine(userMessage);
+                }
+            }
+        }
+
+        void IncomingTrafficHandler()
+        {
+            char networkBuffer[2048];
+            while (m_isServerActive)
+            {
+                int bytesRead = recv(m_connectionSocket, networkBuffer, 2048, 0);
+                if (bytesRead > 0)
+                {
+                    std::lock_guard<std::mutex> lock(m_displayMutex);
+                    std::string receivedData(networkBuffer, bytesRead);
+                    Beep(800, 150);
+                    std::cout << receivedData << "\n";
+                }
+                else
+                {
+                    std::lock_guard<std::mutex> lock(m_displayMutex);
+                    std::cout << "\n[SYSTEM] Peer disconnected from session." << std::endl;
+                    m_isServerActive = false;
+                    
+                    if (!m_isHostMode)
+                    {
+                        exit(0);
+                    }
+                    
+                    HANDLE hConsole = GetStdHandle(STD_OUTPUT_HANDLE);
+                    INPUT_RECORD ir;
+                    DWORD written;
+                    ir.EventType = KEY_EVENT;
+                    ir.Event.KeyEvent.bKeyDown = TRUE;
+                    ir.Event.KeyEvent.wRepeatCount = 1;
+                    ir.Event.KeyEvent.wVirtualKeyCode = VK_RETURN;
+                    ir.Event.KeyEvent.wVirtualScanCode = static_cast<WORD>(MapVirtualKeyA(VK_RETURN, MAPVK_VK_TO_VSC));
+                    ir.Event.KeyEvent.uChar.AsciiChar = '\r';
+                    ir.Event.KeyEvent.dwControlKeyState = 0;
+                    WriteConsoleInputA(GetStdHandle(STD_INPUT_HANDLE), &ir, 1, &written);
+                    break;
+                }
+            }
+        }
+    };
+}
+
+int main()
+{
+    neutron::NetworkEngine appCore;
+    std::string selection;
+    std::cout << "=== NEUTRON SUBSYSTEM ===" << std::endl;
+    std::cout << "1. Act as Host (Listen)\n2. Act as Peer (Connect)\nChoice: ";
+    std::cin >> selection;
+
+    if (selection == "1")
+    {
+        appCore.ExecuteServerMode();
+    }
+    else
+    {
+        std::string remoteIp;
+        std::cout << "Enter target IP: ";
+        std::cin >> remoteIp;
+        appCore.ExecuteClientMode(remoteIp);
+    }
     return 0;
 }
