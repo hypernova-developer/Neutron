@@ -184,7 +184,7 @@ namespace neutron
         bool m_showSettings;
 
     public:
-        ApplicationUI() : m_profileName("Eymen"), m_targetIP("127.0.0.1"), m_targetPort(8080), m_showAbout(false), m_showSettings(false)
+        ApplicationUI() : m_profileName("hypernova-developer"), m_targetIP("127.0.0.1"), m_targetPort(8080), m_showAbout(false), m_showSettings(false)
         {
             memset(m_inputBuffer, 0, sizeof(m_inputBuffer));
         }
