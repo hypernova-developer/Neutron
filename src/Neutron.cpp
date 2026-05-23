@@ -1148,6 +1148,8 @@ int main(int argc, char** argv)
     - English-only identifiers
 */
 
+/*
+
 #include <atomic>
 #include <chrono>
 #include <cstdint>
@@ -1675,6 +1677,1058 @@ int main(int argc, char** argv)
                       << "  /help  : Display this command manual.\n"
                       << "  /clear : Wipe the screen clear while keeping session alive.\n"
                       << "  /exit  : Close the encrypted tunnel and leave.\n"
+                      << "  /quit  : Terminal shorthand for leaving the network.\n"
+                      << ANSI_CYAN << "=================================\n" << ANSI_TEXT_WHITE;
+            std::cout << "> " << std::flush;
+            continue;
+        }
+
+        // Default: Pass raw line over the socket
+        if (!node.SendUserMessage(line, main_print_mutex))
+        {
+            std::cerr << "\033[38;5;196m[error] Send failed. Node disconnected.\n" << ANSI_TEXT_WHITE;
+            break;
+        }
+        
+        std::cout << "> " << std::flush;
+    }
+
+    node.Stop();
+    neutron::SocketLayer::Cleanup();
+    return 0;
+}
+*/
+
+/*
+    Neutron_Full - Minimal runnable skeleton (zero-dependency)
+
+    Code style:
+    - Allman indentation
+    - English-only identifiers
+*/
+
+/*
+
+#include <atomic>
+#include <chrono>
+#include <cstdint>
+#include <cstring>
+#include <iostream>
+#include <mutex>
+#include <string>
+#include <thread>
+#include <vector>
+
+#if defined(_WIN32)
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#pragma comment(lib, "ws2_32.lib")
+#else
+#include <netinet/in.h>
+#include <sys/socket.h>
+#include <arpa/inet.h>
+#include <unistd.h>
+#endif
+
+namespace neutron
+{
+    class Cipher
+    {
+    private:
+        std::string m_key;
+
+    public:
+        Cipher() : m_key("NEUTRON_XOR_MASK_2026")
+        {
+        }
+
+        explicit Cipher(std::string key) : m_key(std::move(key))
+        {
+        }
+
+        std::string Encrypt(const std::string& input) const
+        {
+            if (m_key.empty())
+            {
+                return input;
+            }
+
+            std::string out = input;
+            for (size_t i = 0; i < out.size(); ++i)
+            {
+                out[i] = static_cast<char>(out[i] ^ m_key[i % m_key.size()]);
+            }
+            return out;
+        }
+
+        std::string Decrypt(const std::string& input) const
+        {
+            // XOR mask: decrypt == encrypt
+            return Encrypt(input);
+        }
+    };
+
+    class SocketLayer
+    {
+    public:
+#if defined(_WIN32)
+        using socket_t = SOCKET;
+        static constexpr socket_t invalid_socket = INVALID_SOCKET;
+#else
+        using socket_t = int;
+        static constexpr socket_t invalid_socket = -1;
+#endif
+
+        static void Startup()
+        {
+#if defined(_WIN32)
+            WSADATA wsaData;
+            WSAStartup(MAKEWORD(2, 2), &wsaData);
+#endif
+        }
+
+        static void Cleanup()
+        {
+#if defined(_WIN32)
+            WSACleanup();
+#endif
+        }
+
+        static void Close(socket_t s)
+        {
+            if (s == invalid_socket)
+            {
+                return;
+            }
+#if defined(_WIN32)
+            closesocket(s);
+#else
+            ::close(s);
+#endif
+        }
+
+        static socket_t CreateTcp()
+        {
+#if defined(_WIN32)
+            return ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+#else
+            return ::socket(AF_INET, SOCK_STREAM, 0);
+#endif
+        }
+
+        static bool SetReuseAddr(socket_t s)
+        {
+#if defined(_WIN32)
+            BOOL opt = TRUE;
+            return ::setsockopt(s, SOL_SOCKET, SO_REUSEADDR, (const char*)&opt, sizeof(opt)) == 0;
+#else
+            int opt = 1;
+            return ::setsockopt(s, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) == 0;
+#endif
+        }
+
+        static bool BindListen(socket_t s, uint16_t port)
+        {
+            sockaddr_in addr;
+            std::memset(&addr, 0, sizeof(addr));
+            addr.sin_family = AF_INET;
+            addr.sin_port = htons(port);
+            addr.sin_addr.s_addr = htonl(INADDR_ANY);
+
+            if (::bind(s, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0)
+            {
+                return false;
+            }
+
+            return ::listen(s, 16) == 0;
+        }
+
+        static socket_t Accept(socket_t listen_socket)
+        {
+            sockaddr_in client;
+            socklen_t len = static_cast<socklen_t>(sizeof(client));
+            return ::accept(listen_socket, reinterpret_cast<sockaddr*>(&client), &len);
+        }
+
+        static bool Connect(socket_t s, const std::string& ip, uint16_t port)
+        {
+            sockaddr_in addr;
+            std::memset(&addr, 0, sizeof(addr));
+            addr.sin_family = AF_INET;
+            addr.sin_port = htons(port);
+
+#if defined(_WIN32)
+            if (::InetPtonA(AF_INET, ip.c_str(), &addr.sin_addr) != 1)
+            {
+                return false;
+            }
+#else
+            if (::inet_pton(AF_INET, ip.c_str(), &addr.sin_addr) != 1)
+            {
+                return false;
+            }
+#endif
+
+            return ::connect(s, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == 0;
+        }
+
+        static int RecvAll(socket_t s, char* buffer, int buffer_size)
+        {
+            return static_cast<int>(::recv(s, buffer, buffer_size, 0));
+        }
+
+        static bool SendAll(socket_t s, const char* data, size_t size)
+        {
+            size_t sent_total = 0;
+            while (sent_total < size)
+            {
+#if defined(_WIN32)
+                int sent = ::send(s, data + sent_total, static_cast<int>(size - sent_total), 0);
+#else
+                ssize_t sent = ::send(s, data + sent_total, size - sent_total, 0);
+#endif
+                if (sent <= 0)
+                {
+                    return false;
+                }
+                sent_total += static_cast<size_t>(sent);
+            }
+            return true;
+        }
+    };
+
+    struct ProgramArgs
+    {
+        bool is_host = false;
+        bool is_peer = false;
+        std::string ip = "127.0.0.1";
+        uint16_t port = 8080;
+        std::string name = "anonymous";
+    };
+
+    static bool TryParseArgs(int argc, char** argv, ProgramArgs& out)
+    {
+        for (int i = 1; i < argc; ++i)
+        {
+            std::string a = argv[i];
+            if (a == "--host")
+            {
+                out.is_host = true;
+            }
+            else if (a == "--connect")
+            {
+                out.is_peer = true;
+                if (i + 1 < argc)
+                {
+                    out.ip = argv[++i];
+                }
+                else
+                {
+                    return false;
+                }
+            }
+            else if (a == "--port")
+            {
+                if (i + 1 < argc)
+                {
+                    out.port = static_cast<uint16_t>(std::stoi(argv[++i]));
+                }
+                else
+                {
+                    return false;
+                }
+            }
+            else if (a == "--name")
+            {
+                if (i + 1 < argc)
+                {
+                    out.name = argv[++i];
+                }
+                else
+                {
+                    return false;
+                }
+            }
+            else
+            {
+                return false;
+            }
+        }
+
+        return (out.is_host ^ out.is_peer);
+    }
+
+    class NeutronNode
+    {
+    private:
+        SocketLayer::socket_t m_socket;
+        std::atomic<bool> m_running;
+        std::mutex m_print_mutex;
+        Cipher m_cipher;
+        std::string m_name;
+
+        static void PlatformSleepFor(std::chrono::milliseconds ms)
+        {
+            std::this_thread::sleep_for(ms);
+        }
+
+        void ReceiveLoop()
+        {
+            char buffer[4096];
+            while (m_running.load(std::memory_order_relaxed))
+            {
+                int got = SocketLayer::RecvAll(m_socket, buffer, static_cast<int>(sizeof(buffer)));
+                if (got > 0)
+                {
+                    std::string enc(buffer, buffer + got);
+                    std::string plain = m_cipher.Decrypt(enc);
+
+                    std::lock_guard<std::mutex> lock(m_print_mutex);
+                    std::cout << "\n[peer] " << plain << "\n> " << std::flush;
+                }
+                else
+                {
+                    m_running.store(false, std::memory_order_relaxed);
+                    break;
+                }
+            }
+        }
+
+    public:
+        NeutronNode() : m_socket(SocketLayer::invalid_socket), m_running(false)
+        {
+        }
+
+        ~NeutronNode()
+        {
+            Stop();
+        }
+
+        bool Host(uint16_t port)
+        {
+            SocketLayer::socket_t listen_socket = SocketLayer::CreateTcp();
+            if (listen_socket == SocketLayer::invalid_socket)
+            {
+                return false;
+            }
+
+            SocketLayer::SetReuseAddr(listen_socket);
+            if (!SocketLayer::BindListen(listen_socket, port))
+            {
+                SocketLayer::Close(listen_socket);
+                return false;
+            }
+
+            {
+                std::lock_guard<std::mutex> lock(m_print_mutex);
+                std::cout << "[system] Listening on 0.0.0.0:" << port << " ...\n";
+            }
+
+            m_socket = SocketLayer::Accept(listen_socket);
+            SocketLayer::Close(listen_socket);
+
+            if (m_socket == SocketLayer::invalid_socket)
+            {
+                return false;
+            }
+
+            m_running.store(true, std::memory_order_relaxed);
+            std::thread recv_thread(&NeutronNode::ReceiveLoop, this);
+            recv_thread.detach();
+            return true;
+        }
+
+        bool Connect(const std::string& ip, uint16_t port)
+        {
+            m_socket = SocketLayer::CreateTcp();
+            if (m_socket == SocketLayer::invalid_socket)
+            {
+                return false;
+            }
+
+            if (!SocketLayer::Connect(m_socket, ip, port))
+            {
+                SocketLayer::Close(m_socket);
+                m_socket = SocketLayer::invalid_socket;
+                return false;
+            }
+
+            m_running.store(true, std::memory_order_relaxed);
+            std::thread recv_thread(&NeutronNode::ReceiveLoop, this);
+            recv_thread.detach();
+            return true;
+        }
+
+        void SetName(std::string name)
+        {
+            m_name = std::move(name);
+        }
+
+        void Stop()
+        {
+            if (m_running.exchange(false, std::memory_order_relaxed))
+            {
+                SocketLayer::Close(m_socket);
+                m_socket = SocketLayer::invalid_socket;
+            }
+        }
+
+        bool SendUserMessage(const std::string& text)
+        {
+            if (!m_running.load(std::memory_order_relaxed))
+            {
+                return false;
+            }
+
+            std::string payload = m_name + ": " + text;
+            std::string encrypted = m_cipher.Encrypt(payload);
+
+            return SocketLayer::SendAll(m_socket, encrypted.data(), encrypted.size());
+        }
+    };
+
+    static void PrintUsage()
+    {
+        std::cout << "Neutron_Full (minimal skeleton)\n";
+        std::cout << "Host:    Neutron_Full.exe --host --port 8080 --name your_name\n";
+        std::cout << "Peer:    Neutron_Full.exe --connect 127.0.0.1 --port 8080 --name your_name\n";
+    }
+}
+
+int main(int argc, char** argv)
+{
+    neutron::ProgramArgs args;
+    if (!neutron::TryParseArgs(argc, argv, args))
+    {
+        neutron::PrintUsage();
+        return 1;
+    }
+
+    neutron::SocketLayer::Startup();
+
+    neutron::NeutronNode node;
+    node.SetName(args.name);
+
+    bool ok = false;
+    if (args.is_host)
+    {
+        ok = node.Host(args.port);
+    }
+    else
+    {
+        ok = node.Connect(args.ip, args.port);
+    }
+
+    if (!ok)
+    {
+        std::cerr << "[error] Connection/setup failed.\n";
+        neutron::SocketLayer::Cleanup();
+        return 2;
+    }
+
+    std::cout << "[system] Encrypted session ready. Type messages. (/quit to exit)\n";
+    std::cout << "> " << std::flush;
+
+    std::string line;
+    while (std::getline(std::cin, line))
+    {
+        if (line == "/quit")
+        {
+            break;
+        }
+        if (!line.empty())
+        {
+            if (!node.SendUserMessage(line))
+            {
+                std::cerr << "[error] Send failed.\n";
+                break;
+            }
+        }
+        std::cout << "> " << std::flush;
+    }
+
+    node.Stop();
+    neutron::SocketLayer::Cleanup();
+    return 0;
+}
+*/
+
+/*
+    Neutron_Full - Enhanced Runnable Skeleton (zero-dependency)
+
+    Code style:
+    - Allman indentation
+    - English-only identifiers
+*/
+
+#include <atomic>
+#include <chrono>
+#include <cstdint>
+#include <cstring>
+#include <iostream>
+#include <mutex>
+#include <string>
+#include <thread>
+#include <vector>
+
+#if defined(_WIN32)
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#pragma comment(lib, "ws2_32.lib")
+#else
+#include <netinet/in.h>
+#include <sys/socket.h>
+#include <arpa/inet.h>
+#include <unistd.h>
+#endif
+
+// ANSI Color and Terminal Escape Sequences
+#define ANSI_RESET          "\033[0m"
+#define ANSI_BG_PURPLE      "\033[48;5;53m" // Rich dark purple background
+#define ANSI_TEXT_WHITE     "\033[38;5;15m" // Crisp white text
+#define ANSI_GREEN          "\033[38;5;82m" // Neon/Light green for usernames
+#define ANSI_CYAN           "\033[38;5;51m" // System notifications
+#define ANSI_CLEAR_LINE     "\033[2K"       // Clear entire current line
+#define ANSI_MOVE_CURSOR_UP "\033[1A"       // Move cursor up 1 line
+
+namespace neutron
+{
+    class Cipher
+    {
+    private:
+        std::string m_key;
+
+    public:
+        Cipher() : m_key("NEUTRON_XOR_MASK_2026")
+        {
+        }
+
+        explicit Cipher(std::string key) : m_key(std::move(key))
+        {
+        }
+
+        std::string Encrypt(const std::string& input) const
+        {
+            if (m_key.empty())
+            {
+                return input;
+            }
+
+            std::string out = input;
+            for (size_t i = 0; i < out.size(); ++i)
+            {
+                out[i] = static_cast<char>(out[i] ^ m_key[i % m_key.size()]);
+            }
+            return out;
+        }
+
+        std::string Decrypt(const std::string& input) const
+        {
+            return Encrypt(input);
+        }
+    };
+
+    class SocketLayer
+    {
+    public:
+#if defined(_WIN32)
+        using socket_t = SOCKET;
+        static constexpr socket_t invalid_socket = INVALID_SOCKET;
+#else
+        using socket_t = int;
+        static constexpr socket_t invalid_socket = -1;
+#endif
+
+        static void Startup()
+        {
+#if defined(_WIN32)
+            WSADATA wsaData;
+            WSAStartup(MAKEWORD(2, 2), &wsaData);
+            
+            // Enable ANSI Escape Sequences natively in Windows Console
+            HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);
+            if (hOut != INVALID_HANDLE_VALUE)
+            {
+                DWORD dwMode = 0;
+                GetConsoleMode(hOut, &dwMode);
+                dwMode |= ENABLE_VIRTUAL_TERMINAL_PROCESSING;
+                SetConsoleMode(hOut, dwMode);
+            }
+#endif
+            // Global style initialization
+            std::cout << ANSI_BG_PURPLE << ANSI_TEXT_WHITE << std::flush;
+        }
+
+        static void Cleanup()
+        {
+            // Reset terminal colors before exiting
+            std::cout << ANSI_RESET << std::endl;
+#if defined(_WIN32)
+            WSACleanup();
+#endif
+        }
+
+        static void Close(socket_t s)
+        {
+            if (s == invalid_socket)
+            {
+                return;
+            }
+#if defined(_WIN32)
+            closesocket(s);
+#else
+            ::close(s);
+#endif
+        }
+
+        static socket_t CreateTcp()
+        {
+#if defined(_WIN32)
+            return ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+#else
+            return ::socket(AF_INET, SOCK_STREAM, 0);
+#endif
+        }
+
+        static bool SetReuseAddr(socket_t s)
+        {
+#if defined(_WIN32)
+            BOOL opt = TRUE;
+            return ::setsockopt(s, SOL_SOCKET, SO_REUSEADDR, (const char*)&opt, sizeof(opt)) == 0;
+#else
+            int opt = 1;
+            return ::setsockopt(s, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) == 0;
+#endif
+        }
+
+        static bool BindListen(socket_t s, uint16_t port)
+        {
+            sockaddr_in addr;
+            std::memset(&addr, 0, sizeof(addr));
+            addr.sin_family = AF_INET;
+            addr.sin_port = htons(port);
+            addr.sin_addr.s_addr = htonl(INADDR_ANY);
+
+            if (::bind(s, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0)
+            {
+                return false;
+            }
+
+            return ::listen(s, 16) == 0;
+        }
+
+        static socket_t Accept(socket_t listen_socket)
+        {
+            sockaddr_in client;
+            socklen_t len = static_cast<socklen_t>(sizeof(client));
+            return ::accept(listen_socket, reinterpret_cast<sockaddr*>(&client), &len);
+        }
+
+        static bool Connect(socket_t s, const std::string& ip, uint16_t port)
+        {
+            sockaddr_in addr;
+            std::memset(&addr, 0, sizeof(addr));
+            addr.sin_family = AF_INET;
+            addr.sin_port = htons(port);
+
+#if defined(_WIN32)
+            if (::InetPtonA(AF_INET, ip.c_str(), &addr.sin_addr) != 1)
+            {
+                return false;
+            }
+#else
+            if (::inet_pton(AF_INET, ip.c_str(), &addr.sin_addr) != 1)
+            {
+                return false;
+            }
+#endif
+
+            return ::connect(s, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == 0;
+        }
+
+        static int RecvAll(socket_t s, char* buffer, int buffer_size)
+        {
+            return static_cast<int>(::recv(s, buffer, buffer_size, 0));
+        }
+
+        static bool SendAll(socket_t s, const char* data, size_t size)
+        {
+            size_t sent_total = 0;
+            while (sent_total < size)
+            {
+#if defined(_WIN32)
+                int sent = ::send(s, data + sent_total, static_cast<int>(size - sent_total), 0);
+#else
+                ssize_t sent = ::send(s, data + sent_total, size - sent_total, 0);
+#endif
+                if (sent <= 0)
+                {
+                    return false;
+                }
+                sent_total += static_cast<size_t>(sent);
+            }
+            return true;
+        }
+    };
+
+    struct ProgramArgs
+    {
+        bool is_host = false;
+        bool is_peer = false;
+        std::string ip = "127.0.0.1";
+        uint16_t port = 8080;
+        std::string name = "anonymous";
+    };
+
+    static bool TryParseArgs(int argc, char** argv, ProgramArgs& out)
+    {
+        if (argc == 1)
+        {
+            return false; 
+        }
+
+        for (int i = 1; i < argc; ++i)
+        {
+            std::string a = argv[i];
+            if (a == "--host")
+            {
+                out.is_host = true;
+            }
+            else if (a == "--connect")
+            {
+                out.is_peer = true;
+                if (i + 1 < argc)
+                {
+                    out.ip = argv[++i];
+                }
+                else
+                {
+                    return false;
+                }
+            }
+            else if (a == "--port")
+            {
+                if (i + 1 < argc)
+                {
+                    out.port = static_cast<uint16_t>(std::stoi(argv[++i]));
+                }
+                else
+                {
+                    return false;
+                }
+            }
+            else if (a == "--name")
+            {
+                if (i + 1 < argc)
+                {
+                    out.name = argv[++i];
+                }
+                else
+                {
+                    return false;
+                }
+            }
+            else
+            {
+                return false;
+            }
+        }
+
+        return (out.is_host ^ out.is_peer);
+    }
+
+    class NeutronNode
+    {
+    private:
+        SocketLayer::socket_t m_socket;
+        std::atomic<bool> m_running;
+        std::mutex m_print_mutex;
+        Cipher m_cipher;
+        std::string m_name;
+
+        void ReceiveLoop()
+        {
+            char buffer[4096];
+            while (m_running.load(std::memory_order_relaxed))
+            {
+                int got = SocketLayer::RecvAll(m_socket, buffer, static_cast<int>(sizeof(buffer)));
+                if (got > 0)
+                {
+                    std::string enc(buffer, buffer + got);
+                    std::string plain = m_cipher.Decrypt(enc);
+
+                    // Dynamic Img Manipulation to prevent "> " breakdown
+                    std::lock_guard<std::mutex> lock(m_print_mutex);
+                    std::cout << ANSI_CLEAR_LINE << "\r" << plain << "\n> " << std::flush;
+                }
+                else
+                {
+                    m_running.store(false, std::memory_order_relaxed);
+                    break;
+                }
+            }
+        }
+
+    public:
+        NeutronNode() : m_socket(SocketLayer::invalid_socket), m_running(false)
+        {
+        }
+
+        ~NeutronNode()
+        {
+            Stop();
+        }
+
+        bool Host(uint16_t port)
+        {
+            SocketLayer::socket_t listen_socket = SocketLayer::CreateTcp();
+            if (listen_socket == SocketLayer::invalid_socket)
+            {
+                return false;
+            }
+
+            SocketLayer::SetReuseAddr(listen_socket);
+            if (!SocketLayer::BindListen(listen_socket, port))
+            {
+                SocketLayer::Close(listen_socket);
+                return false;
+            }
+
+            {
+                std::lock_guard<std::mutex> lock(m_print_mutex);
+                std::cout << ANSI_CYAN << "[system] Listening on 0.0.0.0:" << port << " ...\n" << ANSI_TEXT_WHITE;
+            }
+
+            m_socket = SocketLayer::Accept(listen_socket);
+            SocketLayer::Close(listen_socket);
+
+            if (m_socket == SocketLayer::invalid_socket)
+            {
+                return false;
+            }
+
+            m_running.store(true, std::memory_order_relaxed);
+            std::thread recv_thread(&NeutronNode::ReceiveLoop, this);
+            recv_thread.detach();
+            return true;
+        }
+
+        bool Connect(const std::string& ip, uint16_t port)
+        {
+            m_socket = SocketLayer::CreateTcp();
+            if (m_socket == SocketLayer::invalid_socket)
+            {
+                return false;
+            }
+
+            if (!SocketLayer::Connect(m_socket, ip, port))
+            {
+                SocketLayer::Close(m_socket);
+                m_socket = SocketLayer::invalid_socket;
+                return false;
+            }
+
+            m_running.store(true, std::memory_order_relaxed);
+            std::thread recv_thread(&NeutronNode::ReceiveLoop, this);
+            recv_thread.detach();
+            return true;
+        }
+
+        void SetName(std::string name)
+        {
+            m_name = std::move(name);
+        }
+
+        void Stop()
+        {
+            if (m_running.exchange(false, std::memory_order_relaxed))
+            {
+                SocketLayer::Close(m_socket);
+                m_socket = SocketLayer::invalid_socket;
+            }
+        }
+
+        bool SendUserMessage(const std::string& text, std::mutex& print_mtx)
+        {
+            if (!m_running.load(std::memory_order_relaxed))
+            {
+                return false;
+            }
+
+            // Construct payload with neon-green ansi colors encoded for the remote peer
+            std::string remote_payload = ANSI_GREEN + m_name + ANSI_TEXT_WHITE + ": " + text;
+            std::string encrypted = m_cipher.Encrypt(remote_payload);
+
+            if (!SocketLayer::SendAll(m_socket, encrypted.data(), encrypted.size()))
+            {
+                return false;
+            }
+
+            // Repaint our own terminal window to properly show our own username
+            std::lock_guard<std::mutex> lock(print_mtx);
+            std::cout << ANSI_MOVE_CURSOR_UP << ANSI_CLEAR_LINE << "\r"
+                      << ANSI_GREEN << "[you] " << m_name << ANSI_TEXT_WHITE << ": " << text << "\n";
+            return true;
+        }
+    };
+
+    static void InteractiveSetup(ProgramArgs& out)
+    {
+        std::cout << ANSI_CYAN << "=== Neutron P2P Configuration Menu ===\n" << ANSI_TEXT_WHITE;
+        
+        std::cout << "Choose Action Mode:\n  [1] Host (Wait for incoming connection)\n  [2] Connect (Join an existing node)\nSelection: ";
+        std::string choice;
+        std::getline(std::cin, choice);
+        
+        if (choice == "1")
+        {
+            out.is_host = true;
+        }
+        else
+        {
+            out.is_peer = true;
+            std::cout << "Enter target IP address (default: 127.0.0.1): ";
+            std::string target_ip;
+            std::getline(std::cin, target_ip);
+            if (!target_ip.empty())
+            {
+                out.ip = target_ip;
+            }
+        }
+
+        std::cout << "Enter Port (default: 8080): ";
+        std::string target_port;
+        std::getline(std::cin, target_port);
+        if (!target_port.empty())
+        {
+            out.port = static_cast<uint16_t>(std::stoi(target_port));
+        }
+
+        std::cout << "Enter your Nickname: ";
+        std::getline(std::cin, out.name);
+        if (out.name.empty())
+        {
+            out.name = "anonymous";
+        }
+        
+        std::cout << ANSI_CYAN << "--------------------------------------\n" << ANSI_TEXT_WHITE;
+    }
+}
+
+int main(int argc, char** argv)
+{
+    const std::string neutron_version = "Neutron v2.1.2-LTS";
+    const std::string build_number = "0004";
+    const std::string dev_name = "hypernova-developer";
+    const std::string license_name = "GNU GPL v3.0";
+    const unsigned int release_year = 2026;
+    const std::string code_name = "Ironclad";
+    const std::string dev_note = "No step back!";
+    
+    neutron::ProgramArgs args;
+    
+    // Start sockets and setup terminal colors early
+    neutron::SocketLayer::Startup();
+    
+    std::cout << ANSI_CYAN 
+          << "    _   _               _                   \n"
+          << "   | \\ | | ___ _   _  _| |_ _ __ ___  _ __  \n"
+          << "   |  \\| |/ _ \\ | | |/ _` __| '__/ _ \\| '_ \\ \n"
+          << "   | |\\  |  __/ |_| | (_| |_| | | (_) | | | |\n"
+          << "   |_| \\_|\\___|\\__,_|\\__,_|\\__|_|  \\___/|_| |_|\n"
+          << "===============================================\n" 
+          << ANSI_TEXT_WHITE;
+
+    // Check if arguments are supplied via CLI, otherwise switch to interactive prompt mode
+    if (!neutron::TryParseArgs(argc, argv, args))
+    {
+        neutron::InteractiveSetup(args);
+    }
+
+    neutron::NeutronNode node;
+    node.SetName(args.name);
+
+    bool ok = false;
+    if (args.is_host)
+    {
+        ok = node.Host(args.port);
+    }
+    else
+    {
+        ok = node.Connect(args.ip, args.port);
+    }
+
+    if (!ok)
+    {
+        std::cerr << "\033[38;5;196m[error] Connection or network setup failed.\n" << ANSI_TEXT_WHITE;
+        neutron::SocketLayer::Cleanup();
+        return 2;
+    }
+
+    std::mutex main_print_mutex;
+    std::cout << ANSI_CYAN << "[system] Encrypted session ready. Type messages. (/help for commands)\n" << ANSI_TEXT_WHITE;
+    std::cout << "> " << std::flush;
+
+    std::string line;
+    while (std::getline(std::cin, line))
+    {
+        if (line.empty())
+        {
+            std::cout << "> " << std::flush;
+            continue;
+        }
+
+        // 1. COMMAND: Exit session safely
+        if (line == "/quit" || line == "/exit")
+        {
+            break;
+        }
+        
+        // 2. COMMAND: Clear terminal screen and refresh style
+        else if (line == "/clear")
+        {
+            std::lock_guard<std::mutex> lock(main_print_mutex);
+            // ANSI escape to wipe terminal buffer and send cursor back to home position
+            std::cout << "\033[3J\033[H\033[2J"; 
+            // Refresh deep purple profile background
+            std::cout << ANSI_BG_PURPLE << ANSI_TEXT_WHITE;
+            std::cout << ANSI_CYAN << "[system] Terminal cleared. Active session continues...\n" << ANSI_TEXT_WHITE;
+            std::cout << "> " << std::flush;
+            continue;
+        }
+
+        // 3. COMMAND: Print the program info
+        else if (line == "/version")
+        {
+            std::lock_guard<std::mutex> lock(main_print_mutex);
+            std::cout 
+                << ANSI_CYAN
+                << "\n=== Neutron Program Info ===\n"
+                << ANSI_TEXT_WHITE
+                << "Version: " << neutron_version << "\n"
+                << "Build No: " << build_number << "\n"
+                << "Developer: " << dev_name << "\n"
+                << "Release Year: " << release_year << "\n"
+                << "License: " << license_name << "\n"
+                << "Code Name: " << code_name << "\n"
+                << "Dev Note: " << dev_note << "\n"
+                << ANSI_CYAN
+                << "=================================\n" 
+                << ANSI_TEXT_WHITE;
+
+            std::cout << ">" << std::flush;
+            continue;
+        }
+        
+        // 4. COMMAND: Show help overlay manual
+        else if (line == "/help")
+        {
+            std::lock_guard<std::mutex> lock(main_print_mutex);
+            std::cout << ANSI_CYAN << "\n=== Neutron Built-in Commands ===\n" << ANSI_TEXT_WHITE
+                      << "  /help  : Display this command manual.\n"
+                      << "  /clear : Wipe the screen clear while keeping session alive.\n"
+                      << "  /exit  : Close the encrypted tunnel and leave.\n"
+                      << "  /version  : Print the version info, developer nick, year and licensing.\n"
                       << "  /quit  : Terminal shorthand for leaving the network.\n"
                       << ANSI_CYAN << "=================================\n" << ANSI_TEXT_WHITE;
             std::cout << "> " << std::flush;
