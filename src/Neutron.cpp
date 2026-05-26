@@ -2182,7 +2182,6 @@ int main(int argc, char** argv)
 #include <unistd.h>
 #endif
 
-// ANSI Color and Terminal Escape Sequences
 #define ANSI_RESET          "\033[0m"
 #define ANSI_BG_PURPLE      "\033[48;5;53m" // Rich dark purple background
 #define ANSI_TEXT_WHITE     "\033[38;5;15m" // Crisp white text
@@ -2245,7 +2244,6 @@ namespace neutron
             WSADATA wsaData;
             WSAStartup(MAKEWORD(2, 2), &wsaData);
             
-            // Enable ANSI Escape Sequences natively in Windows Console
             HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);
             if (hOut != INVALID_HANDLE_VALUE)
             {
@@ -2255,13 +2253,11 @@ namespace neutron
                 SetConsoleMode(hOut, dwMode);
             }
 #endif
-            // Global style initialization
             std::cout << ANSI_BG_PURPLE << ANSI_TEXT_WHITE << std::flush;
         }
 
         static void Cleanup()
         {
-            // Reset terminal colors before exiting
             std::cout << ANSI_RESET << std::endl;
 #if defined(_WIN32)
             WSACleanup();
@@ -2457,7 +2453,6 @@ namespace neutron
                     std::string enc(buffer, buffer + got);
                     std::string plain = m_cipher.Decrypt(enc);
 
-                    // Dynamic Img Manipulation to prevent "> " breakdown
                     std::lock_guard<std::mutex> lock(m_print_mutex);
                     std::cout << ANSI_CLEAR_LINE << "\r" << plain << "\n> " << std::flush;
                 }
@@ -2555,7 +2550,6 @@ namespace neutron
                 return false;
             }
 
-            // Construct payload with neon-green ansi colors encoded for the remote peer
             std::string remote_payload = ANSI_GREEN + m_name + ANSI_TEXT_WHITE + ": " + text;
             std::string encrypted = m_cipher.Encrypt(remote_payload);
 
@@ -2564,7 +2558,6 @@ namespace neutron
                 return false;
             }
 
-            // Repaint our own terminal window to properly show our own username
             std::lock_guard<std::mutex> lock(print_mtx);
             std::cout << ANSI_MOVE_CURSOR_UP << ANSI_CLEAR_LINE << "\r"
                       << ANSI_GREEN << "[you] " << m_name << ANSI_TEXT_WHITE << ": " << text << "\n";
@@ -2627,7 +2620,6 @@ int main(int argc, char** argv)
     
     neutron::ProgramArgs args;
     
-    // Start sockets and setup terminal colors early
     neutron::SocketLayer::Startup();
     
     std::cout << ANSI_CYAN 
@@ -2639,7 +2631,6 @@ int main(int argc, char** argv)
           << "===============================================\n" 
           << ANSI_TEXT_WHITE;
 
-    // Check if arguments are supplied via CLI, otherwise switch to interactive prompt mode
     if (!neutron::TryParseArgs(argc, argv, args))
     {
         neutron::InteractiveSetup(args);
@@ -2678,26 +2669,21 @@ int main(int argc, char** argv)
             continue;
         }
 
-        // 1. COMMAND: Exit session safely
         if (line == "/quit" || line == "/exit")
         {
             break;
         }
         
-        // 2. COMMAND: Clear terminal screen and refresh style
         else if (line == "/clear")
         {
             std::lock_guard<std::mutex> lock(main_print_mutex);
-            // ANSI escape to wipe terminal buffer and send cursor back to home position
             std::cout << "\033[3J\033[H\033[2J"; 
-            // Refresh deep purple profile background
             std::cout << ANSI_BG_PURPLE << ANSI_TEXT_WHITE;
             std::cout << ANSI_CYAN << "[system] Terminal cleared. Active session continues...\n" << ANSI_TEXT_WHITE;
             std::cout << "> " << std::flush;
             continue;
         }
 
-        // 3. COMMAND: Print the program info
         else if (line == "/version")
         {
             std::lock_guard<std::mutex> lock(main_print_mutex);
@@ -2720,7 +2706,6 @@ int main(int argc, char** argv)
             continue;
         }
         
-        // 4. COMMAND: Show help overlay manual
         else if (line == "/help")
         {
             std::lock_guard<std::mutex> lock(main_print_mutex);
@@ -2735,7 +2720,6 @@ int main(int argc, char** argv)
             continue;
         }
 
-        // Default: Pass raw line over the socket
         if (!node.SendUserMessage(line, main_print_mutex))
         {
             std::cerr << "\033[38;5;196m[error] Send failed. Node disconnected.\n" << ANSI_TEXT_WHITE;
